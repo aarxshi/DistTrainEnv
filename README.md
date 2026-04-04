@@ -1,3 +1,12 @@
+---
+title: DistTrainEnv
+emoji: 🖥️
+colorFrom: blue
+colorTo: green
+sdk: docker
+pinned: false
+---
+
 # DistTrainEnv
 
 An OpenEnv reinforcement learning environment simulating a distributed ML training cluster under fault conditions. An AI agent observes cluster metrics and must detect, diagnose, and recover from faults, keeping the training job healthy.
