@@ -1,6 +1,6 @@
 # DistTrainEnv
 
-An OpenEnv reinforcement learning environment simulating a distributed ML training cluster under fault conditions. An AI agent observes cluster metrics and must detect, diagnose, and recover from faults — keeping the training job healthy.
+An OpenEnv reinforcement learning environment simulating a distributed ML training cluster under fault conditions. An AI agent observes cluster metrics and must detect, diagnose, and recover from faults, keeping the training job healthy.
 
 - Weighted Score (LLaMA-3.3-70B via Groq): **0.9755**
 - Environment: 8-node ring all-reduce cluster
@@ -13,7 +13,7 @@ Built for the [Meta PyTorch OpenEnv Hackathon](https://openenv.dev).
 
 ## 1. Background
 
-In distributed ML training, multiple GPU nodes collaborate using **ring all-reduce** to synchronize gradients across workers. Ring throughput is bounded by the slowest active node — meaning a single fault can degrade the entire cluster silently or catastrophically.
+In distributed ML training, multiple GPU nodes collaborate using **ring all-reduce** to synchronize gradients across workers. Ring throughput is bounded by the slowest active node, meaning a single fault can degrade the entire cluster silently or catastrophically.
 
 Common failure modes:
 
@@ -21,7 +21,7 @@ Common failure modes:
 - **Straggler** — one slow node throttles all-reduce for everyone
 - **Memory OOM** — silent at first, memory climbs gradually until the node slows, then cascades into retries that overload other nodes
 
-Today, engineers monitor dashboards and intervene manually. This environment is designed to train and evaluate RL agents to do that instead — detecting faults early and taking the right action, not just the obvious one.
+Today, engineers monitor dashboards and intervene manually. This environment is designed to train and evaluate RL agents to do that instead, detecting faults early and taking the right action, not just the obvious one.
 
 ---
 
@@ -110,7 +110,7 @@ Node statuses: `healthy` → `slow` → `oom` → `crashed`
 
 ## 5. Reward Function
 
-Dense signal every step — the agent doesn't wait until episode end to learn:
+Dense signal every step, the agent doesn't wait until episode end to learn:
 
 ```
 reward = 0.35 × throughput_score        # cluster steps/sec vs baseline
@@ -120,7 +120,7 @@ reward = 0.35 × throughput_score        # cluster steps/sec vs baseline
        + penalty                         # restarting healthy nodes, urgency scaling, invalid actions
 ```
 
-The `early_detection_bonus` and `causal_fix_bonus` are what create meaningful score variance between naive and smart agents — especially on the hard task.
+The `early_detection_bonus` and `causal_fix_bonus` are what create meaningful score variance between naive and smart agents especially on the hard task.
 
 ---
 
@@ -256,6 +256,6 @@ docker run -p 7860:7860 -e GROQ_API_KEY=gsk_... disttrainenv
 
 ## 10. Conclusion
 
-This environment demonstrates that meaningful distributed systems fault recovery can be framed as an RL problem with clean, deterministic grading. The key design choices — dense reward shaping, a causal fault cascade on the hard task, and early detection bonuses — create a real gap between naive and intelligent agents, making the environment genuinely useful for evaluating LLM reasoning quality.
+This environment demonstrates that meaningful distributed systems fault recovery can be framed as an RL problem with clean, deterministic grading. The key design choices dense reward shaping, a causal fault cascade on the hard task, and early detection bonuses: create a real gap between naive and intelligent agents, making the environment genuinely useful for evaluating LLM reasoning quality.
 
 The simulation runs entirely in-process Python with no external dependencies at runtime, making it reproducible and deployable within strict compute budgets (2 vCPU / 8 GB RAM).
