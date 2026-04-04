@@ -222,7 +222,7 @@ pip install -r requirements.txt
 python inference.py --dry-run
 ```
 
-Uses a rule-based agent to verify the full `[START]` → `[STEP N]` → `[END]` log format and grader pipeline. Completes in under 10 seconds.
+Uses a rule-based agent to verify the full `[START]` → `[STEP] step=N` → `[END]` log format
 
 **Step 3 — Run with a real LLM**
 
