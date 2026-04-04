@@ -1,0 +1,88 @@
+name: dist-train-env
+version: "1.0.0"
+description: >
+  A simulated distributed ML training cluster environment where
+  an AI agent must detect and recover from faults including node
+  crashes, stragglers, and cascading OOM failures in a ring
+  all-reduce topology. The agent observes cluster metrics and
+  training job health, and takes recovery actions to maintain
+  throughput and keep the loss curve on trajectory.
+
+tags:
+  - openenv
+  - distributed-systems
+  - fault-recovery
+  - reinforcement-learning
+  - mlops
+
+tasks:
+  - id: easy
+    name: "Node Crash Recovery"
+    description: >
+      A single worker node crashes at step 1.
+      The agent must detect the crash from alerts and metrics,
+      then restart or remove the node to restore ring health.
+    difficulty: easy
+    max_steps: 15
+    success_threshold: 0.7
+
+  - id: medium
+    name: "Straggler Detection and Removal"
+    description: >
+      A worker node becomes a straggler at step 1, running at
+      30% of normal throughput. The node appears slow but not
+      crashed. The agent must identify the bottleneck and remove
+      it from the ring to restore cluster throughput.
+    difficulty: medium
+    max_steps: 20
+    success_threshold: 0.6
+
+  - id: hard
+    name: "Cascading OOM Fault Recovery"
+    description: >
+      A silent OOM fault begins on node_2 at step 1 (root cause).
+      Memory climbs gradually. At step 5, node_7 becomes a straggler
+      as a symptom of node_2's retry storm. The agent must trace the
+      causal chain and fix the root cause (node_2), not just the
+      visible symptom (node_7). Gradient staleness builds up silently
+      and the loss begins diverging if left unaddressed.
+    difficulty: hard
+    max_steps: 25
+    success_threshold: 0.5
+
+observation_space:
+  type: object
+  description: >
+    Cluster state including all node metrics, training job health,
+    active ring order, and human-readable alert strings.
+  fields:
+    nodes: "List of NodeObservation with id, status, memory, throughput, latency, in_ring"
+    job: "JobObservation with step, loss, expected_loss, cluster_throughput, gradient_staleness, loss_diverging"
+    ring_order: "List of node IDs currently active in the all-reduce ring"
+    alerts: "List of human-readable alert strings (CRITICAL/WARNING/INFO)"
+    step: "Current environment timestep"
+    task_id: "Current task identifier: easy/medium/hard"
+
+action_space:
+  type: object
+  description: >
+    Discrete action type with optional target node.
+  fields:
+    action_type: "One of: restart_node, remove_from_ring, reduce_batch, checkpoint, inspect, noop"
+    target_node: "Optional node ID string (e.g. node_0 through node_7)"
+    parameters: "Optional dict for future extensibility"
+
+reward_space:
+  type: object
+  description: >
+    Shaped reward with dense signal every step.
+  fields:
+    value: "Total scalar reward for this step"
+    throughput_score: "0.0-1.0 cluster throughput health component"
+    loss_health_score: "0.0-1.0 loss trajectory health component"
+    early_detection_bonus: "Bonus for acting before fault becomes critical"
+    causal_fix_bonus: "Bonus for fixing root cause vs symptom"
+    penalty: "Total penalties this step (negative)"
+
+entrypoint: app.py
+port: 7860
