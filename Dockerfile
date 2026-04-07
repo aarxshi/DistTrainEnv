@@ -13,7 +13,7 @@ COPY requirements.txt .
 
 # install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
-
+RUN pip install openenv-core
 # copy all project files
 COPY . .
 
