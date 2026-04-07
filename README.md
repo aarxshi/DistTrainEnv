@@ -236,8 +236,8 @@ Uses a rule-based agent to verify the full `[START]` → `[STEP] step=N` → `[E
 **Step 3 — Run with a real LLM**
 
 ```bash
-GROQ_API_KEY=gsk_... python inference.py
-GROQ_API_KEY=gsk_... python inference.py --task hard
+HF_TOKEN=gsk_... python inference.py
+HF_TOKEN=gsk_... python inference.py --task hard
 ```
 
 **Step 4 — Start the API server**
@@ -258,7 +258,7 @@ python app.py
 
 ```bash
 docker build -t disttrainenv .
-docker run -p 7860:7860 -e GROQ_API_KEY=gsk_... disttrainenv
+docker run -p 7860:7860 -e HF_TOKEN=gsk_... disttrainenv
 ```
 
 ---
