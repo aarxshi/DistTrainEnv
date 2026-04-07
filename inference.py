@@ -119,24 +119,9 @@ def log_step(step: int, action: str, reward: float,
     )
 
 
-def log_end(success: bool, steps: int,
-            score: float, rewards: List[float]) -> None:
-    """
-    Emit [END] line. Always called, even on exception.
-    - success is lowercase boolean
-    - score formatted to 2 decimal places
-    - rewards is comma-separated list of 2dp floats
-    Field order: success, steps, score, rewards
-    """
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(
-        f"[END] success={str(success).lower()} "
-        f"steps={steps} "
-        f"score={score:.2f} "
-        f"rewards={rewards_str}",
-        flush=True
-    )
-
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
 
 # ----------------------------------------------------------
 # Observation formatting
@@ -402,20 +387,9 @@ def run_task(client: Optional[OpenAI], task_id: str,
 # ----------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="DistTrainEnv inference agent"
-    )
-    parser.add_argument(
-        "--task",
-        choices=["easy", "medium", "hard", "all"],
-        default="all",
-        help="Which task to run (default: all)"
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Use rule-based agent instead of LLM (no API key needed)"
-    )
+    parser = argparse.ArgumentParser(description="DistTrainEnv inference agent")
+    parser.add_argument("--task", choices=["easy", "medium", "hard", "all"], default="all")
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     dry_run = args.dry_run
@@ -423,17 +397,16 @@ def main():
 
     if not dry_run:
         if not API_KEY:
-            print(
-                "WARNING: HF_TOKEN not set. "
-                "Falling back to dry-run mode.",
-                flush=True
-            )
             dry_run = True
         else:
-            client = OpenAI(
-                api_key=API_KEY,
-                base_url=API_BASE_URL
-            )
+            try:
+                client = OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
+                # test the client works
+                client.models.list()
+            except Exception as e:
+                print(f"WARNING: OpenAI client failed ({e}), falling back to dry-run.", flush=True)
+                dry_run = True
+                client = None
 
     tasks_to_run = TASKS if args.task == "all" else [args.task]
     all_scores = {}
@@ -442,19 +415,14 @@ def main():
         result = run_task(client, task_id, dry_run=dry_run)
         all_scores[task_id] = result["score"]
 
-    # Final summary
     print(f"\n{'='*55}", flush=True)
     print("FINAL SCORES", flush=True)
     print(f"{'='*55}", flush=True)
     for task_id, score in all_scores.items():
         print(f"  {task_id:8s}: {score:.4f}", flush=True)
 
-    # Weighted total: easy=0.2, medium=0.3, hard=0.5
     weights = {"easy": 0.2, "medium": 0.3, "hard": 0.5}
-    weighted = sum(
-        all_scores.get(t, 0.0) * weights[t]
-        for t in tasks_to_run
-    )
+    weighted = sum(all_scores.get(t, 0.0) * weights[t] for t in tasks_to_run)
     print(f"  {'WEIGHTED':8s}: {weighted:.4f}", flush=True)
 
 
