@@ -1,7 +1,7 @@
 
 #!/usr/bin/env python3
 """
-inference.pyâ LLM agent loop for DistTrainEnv.
+inference.py LLM agent loop for DistTrainEnv.
 
 Usage:
     HF_TOKEN=gsk_... python inference.py
@@ -220,9 +220,11 @@ def main():
 
     if not dry_run:
         if not API_KEY:
-            print("ERROR: HF_TOKEN not set. use --dry-run for testing.")
-            sys.exit(1)
-        client = OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
+            print("WARNING: HF_TOKEN not set. Falling back to dry-run mode.")
+            dry_run = True
+            client = None
+        else:
+            client = OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
 
     tasks_to_run = TASKS if args.task == "all" else [args.task]
     all_results = {}
