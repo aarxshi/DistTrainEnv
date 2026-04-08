@@ -176,8 +176,8 @@ Scores from running `llama-3.3-70b-versatile` via Groq API as the agent:
 |---|---|
 | easy | 0.9722 |
 | medium | 0.9809 |
-| hard | 0.9713 |
-| **weighted** | **0.9755** |
+| hard | 0.5754 |
+| **weighted** | **0.7764** |
 
 Weights: easy 0.25, medium 0.35, hard 0.40
 
