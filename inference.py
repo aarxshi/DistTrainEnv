@@ -40,8 +40,6 @@ from environment.models import Action
 # ----------------------------------------------------------
 # Environment variables — mandatory per hackathon spec
 # ----------------------------------------------------------
-API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
-API_BASE_URL = os.getenv("API_BASE_URL")
 MODEL_NAME   = os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
 ENV_NAME     = "dist-train-env"
 
@@ -416,22 +414,22 @@ def main():
     dry_run = args.dry_run
     client = None
 
-    # ✅ SAFE OpenAI initialization (this was your crash)
+    # Read credentials at runtime so validator-injected env vars are present.
+    # API_KEY takes priority over HF_TOKEN per hackathon spec.
+    api_key      = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN")
+    api_base_url = os.environ.get("API_BASE_URL")
+
     if not dry_run:
-        if not API_KEY:
-            print("WARNING: HF_TOKEN not set. Falling back to dry-run.", flush=True)
-            dry_run = True
-        else:
-            try:
-                client = OpenAI(
-                    api_key=API_KEY,
-                    base_url=API_BASE_URL,
-                    timeout=60.0,
-                )
-            except Exception as e:
-                print(f"WARNING: OpenAI init failed: {e}. Falling back to dry-run.", flush=True)
-                dry_run = True
-                client = None
+        if not api_key:
+            raise RuntimeError(
+                "API_KEY env var is not set. "
+                "The validator must inject API_KEY and API_BASE_URL."
+            )
+        client = OpenAI(
+            api_key=api_key,
+            base_url=api_base_url,
+            timeout=60.0,
+        )
 
     tasks_to_run = TASKS if args.task == "all" else [args.task]
     all_scores = {}
