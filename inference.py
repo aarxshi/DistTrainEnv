@@ -30,7 +30,7 @@ import json
 import argparse
 from typing import Optional, List
 
-from openai import OpenAI
+import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -289,7 +289,7 @@ def compute_score(task_id: str, episode_history: list,
 # Single task episode runner
 # ----------------------------------------------------------
 
-def run_task(client: Optional[OpenAI], task_id: str,
+def run_task(client: Optional[dict], task_id: str,
              dry_run: bool = False) -> dict:
     """
     Run one full episode for a given task.
@@ -333,14 +333,22 @@ def run_task(client: Optional[OpenAI], task_id: str,
                 action = _rule_based_action(obs_dict)
             else:
                 try:
-                    response = client.chat.completions.create(
-                        model=MODEL_NAME,
-                        messages=messages,
-                        max_tokens=100,   # keep responses short
-                        temperature=0.0,  # deterministic for reproducibility
+                    resp = requests.post(
+                        client["base_url"].rstrip("/") + "/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {client['api_key']}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": MODEL_NAME,
+                            "messages": messages,
+                            "max_tokens": 100,
+                            "temperature": 0.0,
+                        },
+                        timeout=60,
                     )
-                    response_text = response.choices[0].message.content
-                    # Add assistant response to conversation history
+                    resp.raise_for_status()
+                    response_text = resp.json()["choices"][0]["message"]["content"]
                     messages.append({
                         "role": "assistant",
                         "content": response_text
@@ -415,7 +423,6 @@ def main():
     client = None
 
     # Read credentials at runtime so validator-injected env vars are present.
-    # API_KEY takes priority over HF_TOKEN per hackathon spec.
     api_key      = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN")
     api_base_url = os.environ.get("API_BASE_URL")
 
@@ -425,11 +432,14 @@ def main():
                 "API_KEY env var is not set. "
                 "The validator must inject API_KEY and API_BASE_URL."
             )
-        client = OpenAI(
-            api_key=api_key,
-            base_url=api_base_url,
-            timeout=60.0,
-        )
+        if not api_base_url:
+            raise RuntimeError(
+                "API_BASE_URL env var is not set. "
+                "The validator must inject API_KEY and API_BASE_URL."
+            )
+        # Use plain requests dict — avoids all OpenAI/httpx init issues
+        client = {"api_key": api_key, "base_url": api_base_url}
+        print(f"INFO: Using API_BASE_URL={api_base_url}", flush=True)
 
     tasks_to_run = TASKS if args.task == "all" else [args.task]
     all_scores = {}
