@@ -14,8 +14,9 @@ from environment.env import DistTrainEnv
 from environment.models import Action
 
 # ----------------------------------------------------------
-API_KEY = os.environ.get("API_KEY")
-API_BASE_URL = os.environ.get("API_BASE_URL")
+# Required env vars per submission spec: HF_TOKEN, API_BASE_URL, MODEL_NAME
+API_KEY = os.environ.get("HF_TOKEN") or os.environ.get("API_KEY")
+API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")  # default per spec requirement
 MODEL_NAME = os.environ.get("MODEL_NAME", "llama-3.3-70b-versatile")
 ENV_NAME = "dist-train-env"
 
@@ -43,7 +44,7 @@ STRICT RULES - act immediately, never noop when a fault exists:
 """
 
 # ----------------------------------------------------------
-# LOGGING
+# LOGGING — must match spec exactly
 # ----------------------------------------------------------
 
 def log_start(task: str, env: str, model: str):
@@ -51,10 +52,12 @@ def log_start(task: str, env: str, model: str):
 
 def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]):
     error_val = error if error else "null"
-    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={str(done).lower()} error={error_val}", flush=True)
+    done_val = str(done).lower()
+    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}", flush=True)
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]):
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    # FIX: score uses 2 decimal places to match the spec example (score=1.00)
     print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
 
 # ----------------------------------------------------------
@@ -82,7 +85,6 @@ def action_to_str(action: Action) -> str:
 
 def _get_urgent_action(obs_dict: dict) -> Optional[Action]:
     nodes = obs_dict.get("nodes", [])
-    alerts = obs_dict.get("alerts", [])
 
     # Priority 1: crashed
     for node in nodes:
@@ -97,7 +99,7 @@ def _get_urgent_action(obs_dict: dict) -> Optional[Action]:
         if node.get("memory", 0) > 0.4 and node.get("in_ring", False):
             return Action(action_type="reduce_batch", target_node=node["id"])
 
-    # Priority 3: slow/straggler AND still in ring (don't repeat if already removed)
+    # Priority 3: slow/straggler AND still in ring
     for node in nodes:
         if node["status"] in ("slow", "straggler") and node.get("in_ring", True):
             return Action(action_type="remove_from_ring", target_node=node["id"])
@@ -125,10 +127,10 @@ def compute_score(rewards: List[float]) -> float:
 
 # ----------------------------------------------------------
 
-def run_task(client: Optional[OpenAI], task_id: str, dry_run: bool):
+def run_task(client: Optional[OpenAI], task_id: str, dry_run: bool) -> dict:
     env = DistTrainEnv(task_id=task_id)
 
-    rewards = []
+    rewards: List[float] = []
     steps_taken = 0
     score = 0.0
     success = False
@@ -143,10 +145,7 @@ def run_task(client: Optional[OpenAI], task_id: str, dry_run: bool):
 
         for step in range(1, MAX_STEPS_PER_TASK + 1):
             error_str = None
-            
-            
-    
-    
+
             # -------- ACTION --------
             if dry_run:
                 action = _rule_based_action(obs_dict)
@@ -171,7 +170,6 @@ def run_task(client: Optional[OpenAI], task_id: str, dry_run: bool):
 
                         text = response.choices[0].message.content or ""
                         messages.append({"role": "assistant", "content": text})
-
                         action = parse_action(text)
 
                     except Exception as e:
@@ -197,14 +195,14 @@ def run_task(client: Optional[OpenAI], task_id: str, dry_run: bool):
         success = score >= SUCCESS_THRESHOLD
 
     except Exception as e:
-        print(f"ERROR: {str(e)[:100]}", flush=True)
+        print(f"[DEBUG] Task error: {str(e)[:100]}", flush=True)
 
     finally:
         try:
             env.close()
         except Exception:
             pass
-
+        # FIX: log_end is ONLY called here (inside run_task), never duplicated in main()
         log_end(success, steps_taken, score, rewards)
 
     return {"score": score}
@@ -221,25 +219,23 @@ def main():
     client = None
 
     if not dry_run:
-        api_key = os.environ.get("API_KEY")
-        api_base = os.environ.get("API_BASE_URL")
-
-        if api_base and api_key:
-            # ✅ Eval environment — use injected proxy (required for submission)
+        # Use top-level vars read from HF_TOKEN / API_BASE_URL / MODEL_NAME as required by spec
+        if API_KEY and API_BASE_URL:
+            # Eval environment — uses injected API_BASE_URL and HF_TOKEN
             client = OpenAI(
-                api_key=api_key,
-                base_url=api_base,
+                api_key=API_KEY,
+                base_url=API_BASE_URL,
                 timeout=60.0,
             )
-        elif api_key:
-            # Local testing with Groq
+        elif API_KEY:
+            # Local testing fallback (no API_BASE_URL set)
             client = OpenAI(
-                api_key=api_key,
+                api_key=API_KEY,
                 base_url="https://api.groq.com/openai/v1",
                 timeout=60.0,
             )
         else:
-            print("WARNING: No API credentials. Falling back to dry-run.", flush=True)
+            print("[DEBUG] No HF_TOKEN found. Falling back to dry-run.", flush=True)
             dry_run = True
 
     tasks_to_run = TASKS if args.task == "all" else [args.task]
@@ -250,8 +246,9 @@ def main():
             result = run_task(client, task_id, dry_run)
             scores[task_id] = result["score"]
         except Exception as e:
-            print(f"ERROR in task {task_id}: {e}", flush=True)
-            log_end(success=False, steps=0, score=0.0, rewards=[])
+            # FIX: do NOT call log_end here — run_task's finally block already did it.
+            # Just record a zero score and move on.
+            print(f"[DEBUG] Outer error in task {task_id}: {e}", flush=True)
             scores[task_id] = 0.0
 
     print("\n=======================================================", flush=True)
@@ -263,7 +260,6 @@ def main():
 
     weights = {"easy": 0.2, "medium": 0.3, "hard": 0.5}
     total = sum(scores.get(t, 0.0) * weights[t] for t in tasks_to_run)
-
     print(f"{'WEIGHTED':8s}: {total:.4f}", flush=True)
 
 # ----------------------------------------------------------
