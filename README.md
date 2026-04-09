@@ -5,6 +5,8 @@ colorFrom: blue
 colorTo: green
 sdk: docker
 pinned: false
+tags:
+  - openenv
 ---
 
 # DistTrainEnv
