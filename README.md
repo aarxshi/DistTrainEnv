@@ -11,7 +11,7 @@ pinned: false
 
 An OpenEnv reinforcement learning environment simulating a distributed ML training cluster under fault conditions. An AI agent observes cluster metrics and must detect, diagnose, and recover from faults, keeping the training job healthy.
 
-- Weighted Score (LLaMA-3.3-70B via Groq): **0.9755**
+- Weighted Score (LLaMA-3.3-70B via Groq): **0.7764**
 - Environment: 8-node ring all-reduce cluster
 - Tasks: 3 (easy / medium / hard)
 - Constraint: runs on 2 vCPU / 8 GB RAM
@@ -94,7 +94,7 @@ Key signals:
 
 | Signal | Threshold | Meaning |
 |---|---|---|
-| `memory` | > 0.75 | early OOM warning — act now |
+| `memory` | > 0.65 | early OOM warning — act now |
 | `memory` | > 0.90 | critical — crash imminent |
 | `gradient_staleness` | > 0.30 | training degrading silently |
 | `loss_diverging` | true | serious — immediate action required |
@@ -179,7 +179,7 @@ Scores from running `llama-3.3-70b-versatile` via Groq API as the agent:
 | hard | 0.5754 |
 | **weighted** | **0.7764** |
 
-Weights: easy 0.25, medium 0.35, hard 0.40
+Weights: easy 0.20, medium 0.30, hard 0.50
 
 ---
 
