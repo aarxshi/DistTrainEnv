@@ -7,6 +7,7 @@ Finale upgrades:
 - False alarm node wiring
 - Stochastic fault configs for medium and hard
 - Updated max steps: medium=60, hard=120
+- Minimum episode length per task
 - Phase info passed through to Observation
 """
 
@@ -38,6 +39,14 @@ MAX_STEPS = {
     "easy":   EASY_MAX_STEPS,
     "medium": MEDIUM_MAX_STEPS,
     "hard":   HARD_MAX_STEPS,
+}
+
+# Minimum steps before episode can end on recovery
+# Ensures training signal has enough steps to be meaningful
+MIN_STEPS = {
+    "easy":   8,
+    "medium": 15,
+    "hard":   HARD_MAX_STEPS,  # hard always runs full length
 }
 
 
@@ -88,8 +97,6 @@ class DistTrainEnv:
 
         self._done = False
 
-        # Generate fresh fault config each episode
-        # This is what makes medium/hard stochastic
         fault_events = TASK_CONFIGS[self.task_id]()
         false_alarm = self._get_false_alarm(self.task_id, fault_events)
 
@@ -186,32 +193,48 @@ class DistTrainEnv:
         }
 
     def _check_done(self, state: dict) -> bool:
-    # 1. Max steps always ends episode
-      if state["step"] >= self.max_steps:
-          return True
+        """
+        Episode termination logic.
 
-      # 2. Unrecoverable state — end early regardless of task
-      critical_nodes = sum(
-          1 for n in state["nodes"]
-          if n["status"] in ["oom", "crashed"]
-      )
-      if state["job"]["loss_diverging"] and critical_nodes >= 3:
-          return True
+        Easy/Medium:
+        - Must run at least MIN_STEPS before ending on recovery
+        - Ends when healthy OR max steps reached OR unrecoverable
 
-      # 3. Easy and medium — end as soon as healthy
-      if self.task_id != "hard":
-          if self.cluster.is_healthy():
-              return True
+        Hard:
+        - Runs all 120 steps (max steps)
+        - Can end early only if unrecoverable
+        - Phase 3 healthy = success but episode continues to max steps
+          for full training signal
+        """
+        current_step = state["step"]
+        min_steps = MIN_STEPS.get(self.task_id, 8)
 
-      # 4. Hard — must reach Phase 3 AND be healthy
-      # Cannot end in Phase 1 or 2 even if cluster recovers
-      # But don't force all 120 steps — end cleanly once Phase 3 stabilizes
-      if self.task_id == "hard":
-          if (state.get("current_phase", 1) == 3
-                  and self.cluster.is_healthy()):
-              return True
+        # Never end before minimum steps
+        if current_step < min_steps:
+            return False
 
-      return False
+        # Max steps always ends episode
+        if current_step >= self.max_steps:
+            return True
+
+        # Unrecoverable state — end early regardless of task
+        critical_nodes = sum(
+            1 for n in state["nodes"]
+            if n["status"] in ["oom", "crashed"]
+        )
+        if state["job"]["loss_diverging"] and critical_nodes >= 3:
+            return True
+
+        # Easy and medium — end when healthy
+        if self.task_id != "hard":
+            if self.cluster.is_healthy():
+                return True
+            return False
+
+        # Hard — must complete all phases
+        # Only ends early if unrecoverable (handled above)
+        return False
+
     def _build_observation(self, state: dict) -> Observation:
         """Convert raw cluster state dict to typed Observation model."""
         nodes = [
