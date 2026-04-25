@@ -2,8 +2,10 @@
 """
 tasks/task_configs.py — Task metadata for DistTrainEnv.
 
-Each task config is a dict the grader and inference.py consume.
-Fault injection comes from environment/faults.py.
+Finale upgrades:
+- fault_node and root_cause_node removed (now dynamic via faults.py)
+- max_steps updated: medium=60, hard=120
+- descriptions updated to reflect stochastic fault structure
 """
 
 from typing import Dict, Any
@@ -20,11 +22,9 @@ TASK_CONFIGS: Dict[str, Dict[str, Any]] = {
         ),
         "max_steps": 15,
         "success_threshold": 0.7,
-        # grading targets
-        "target_throughput": 0.85,    # cluster throughput to recover to
-        "fault_node": "node_3",       # which node crashes (matches faults.py)
-        "root_cause_node": "node_3",  # same as fault for easy task
-        # scoring weights
+        "target_throughput": 0.85,
+        "fault_node": "node_3",        # easy stays deterministic
+        "root_cause_node": "node_3",
         "weights": {
             "throughput_recovery": 0.40,
             "loss_health":         0.30,
@@ -35,19 +35,23 @@ TASK_CONFIGS: Dict[str, Dict[str, Any]] = {
 
     "medium": {
         "task_id": "medium",
-        "name": "Straggler Detection and Removal",
+        "name": "Stochastic Compound Fault Recovery",
         "description": (
-            "A worker node becomes a straggler at step 1 running at 30% speed. "
-            "It is slow but not crashed. Identify and remove it from the ring."
+            "A compound fault hits the cluster each episode — "
+            "a primary straggler, a secondary OOM, and an intermittent "
+            "straggler on random nodes with random timing. "
+            "One healthy node shows elevated memory (false alarm). "
+            "Identify the root cause, not just visible symptoms. "
+            "Agent cannot memorize — every episode is different."
         ),
-        "max_steps": 20,
+        "max_steps": 60,               # updated from 20
         "success_threshold": 0.6,
         "target_throughput": 0.80,
-        "fault_node": "node_5",
-        "root_cause_node": "node_5",
+        "fault_node": None,            # dynamic — set by faults.py each episode
+        "root_cause_node": None,       # dynamic — set by faults.py each episode
         "weights": {
             "throughput_recovery": 0.35,
-            "detection_speed":     0.30,  # how quickly straggler was identified
+            "detection_speed":     0.30,
             "loss_health":         0.25,
             "ring_integrity":      0.10,
         },
@@ -55,24 +59,26 @@ TASK_CONFIGS: Dict[str, Dict[str, Any]] = {
 
     "hard": {
         "task_id": "hard",
-        "name": "Cascading OOM Fault Recovery",
+        "name": "3-Phase Long-Horizon Fault Recovery",
         "description": (
-            "A silent OOM fault begins on node_2 at step 1 (root cause). "
-            "Memory climbs gradually. At step 5 node_7 becomes a straggler "
-            "as a symptom of node_2s retry storm. Fix the root cause (node_2), "
-            "not just the visible symptom (node_7). "
-            "Gradient staleness builds silently and loss diverges if untreated."
+            "A 3-phase distributed training run across 120 steps. "
+            "Phase 1 (1-30): cluster warmup — agent allocates nodes. "
+            "Phase 2 (31-90): fault storm — OOM root cause, cascade straggler, "
+            "intermittent faults, second OOM on random nodes. "
+            "Phase 3 (91-120): stabilize and optimize. "
+            "Early Phase 1 mistakes compound into Phase 2 failures. "
+            "One false alarm node visible from Phase 1."
         ),
-        "max_steps": 25,
+        "max_steps": 120,              # updated from 25
         "success_threshold": 0.5,
         "target_throughput": 0.75,
-        "fault_node": "node_7",       # visible symptom
-        "root_cause_node": "node_2",  # actual root cause
+        "fault_node": None,            # dynamic — set by faults.py each episode
+        "root_cause_node": None,       # dynamic — set by faults.py each episode
         "weights": {
-            "root_cause_fixed":    0.35,  # biggest weight — did agent fix node_2?
+            "root_cause_fixed":    0.35,
             "loss_health":         0.30,
             "throughput_recovery": 0.20,
-            "early_detection":     0.15,  # bonus for catching OOM before crash
+            "early_detection":     0.15,
         },
     },
 

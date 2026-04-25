@@ -2,8 +2,12 @@
 """
 environment/env.py — OpenEnv-compliant DistTrainEnv environment.
 
-Wraps RingCluster in the standard OpenEnv interface.
-This is what the FastAPI app exposes as HTTP endpoints.
+Finale upgrades:
+- Phase-aware reset for hard task (3-phase structure)
+- False alarm node wiring
+- Stochastic fault configs for medium and hard
+- Updated max steps: medium=60, hard=120
+- Phase info passed through to Observation
 """
 
 from typing import Optional
@@ -16,21 +20,24 @@ from environment.models import (
 from environment.faults import (
     easy_fault_config,
     medium_fault_config,
-    hard_fault_config
+    medium_false_alarm_config,
+    hard_fault_config,
+    hard_false_alarm_config,
+    EASY_MAX_STEPS,
+    MEDIUM_MAX_STEPS,
+    HARD_MAX_STEPS,
 )
 
-# map task_id string to fault config function
 TASK_CONFIGS = {
     "easy":   easy_fault_config,
     "medium": medium_fault_config,
     "hard":   hard_fault_config,
 }
 
-# max steps per episode per task
 MAX_STEPS = {
-    "easy":   15,
-    "medium": 20,
-    "hard":   25,
+    "easy":   EASY_MAX_STEPS,
+    "medium": MEDIUM_MAX_STEPS,
+    "hard":   HARD_MAX_STEPS,
 }
 
 
@@ -38,14 +45,11 @@ class DistTrainEnv:
     """
     OpenEnv-compliant distributed training fault recovery environment.
 
-    The agent must detect and recover from faults in a simulated
-    distributed ML training cluster running ring all-reduce.
-
     Tasks:
-        easy   — single node crash, agent must restart it
-        medium — straggler node, agent must identify and remove it
-        hard   — cascading OOM -> straggler -> gradient staleness,
-                 agent must find and fix the root cause
+        easy   — deterministic single node crash (baseline anchor)
+        medium — stochastic compound fault, 60 steps, false alarm
+        hard   — 3-phase long-horizon, 120 steps, compound faults,
+                 false alarm, intermittent stragglers
     """
 
     def __init__(self, task_id: str = "easy"):
@@ -53,15 +57,29 @@ class DistTrainEnv:
         self.max_steps = MAX_STEPS[task_id]
         self._done = False
 
-        # build cluster with the correct fault config
         fault_events = TASK_CONFIGS[task_id]()
-        self.cluster = RingCluster(n_nodes=8, fault_events=fault_events)
+        false_alarm = self._get_false_alarm(task_id, fault_events)
+
+        self.cluster = RingCluster(
+            n_nodes=8,
+            fault_events=fault_events,
+            false_alarm=false_alarm,
+            task_id=task_id,
+        )
         self.reward_engine = RewardEngine(self.cluster)
+
+    def _get_false_alarm(self, task_id, fault_events):
+        """Returns false alarm config for medium and hard tasks."""
+        if task_id == "medium":
+            return medium_false_alarm_config(fault_events)
+        elif task_id == "hard":
+            return hard_false_alarm_config(fault_events)
+        return None
 
     def reset(self, task_id: Optional[str] = None) -> Observation:
         """
         Reset environment to initial state.
-        Optionally switch to a different task.
+        Generates new stochastic fault config each reset.
         Returns initial Observation.
         """
         if task_id and task_id in TASK_CONFIGS:
@@ -70,14 +88,19 @@ class DistTrainEnv:
 
         self._done = False
 
+        # Generate fresh fault config each episode
+        # This is what makes medium/hard stochastic
         fault_events = TASK_CONFIGS[self.task_id]()
-        self.cluster.reset(fault_events=fault_events)
+        false_alarm = self._get_false_alarm(self.task_id, fault_events)
+
+        self.cluster.reset(
+            fault_events=fault_events,
+            false_alarm=false_alarm,
+            task_id=self.task_id,
+        )
         self.reward_engine.reset()
 
-        # tick once to get initial state with faults visible
-        # (step 0 is clean, faults start at step 1)
         initial_state = self.cluster.get_state()
-
         return self._build_observation(initial_state)
 
     def step(self, action: Action) -> StepResult:
@@ -86,7 +109,6 @@ class DistTrainEnv:
         Returns StepResult with observation, reward, done, info.
         """
         if self._done:
-            # episode already finished — return terminal state
             obs = self._build_observation(self.cluster.get_state())
             reward = Reward(
                 value=0.0,
@@ -100,20 +122,16 @@ class DistTrainEnv:
                 info={"message": "Episode already done. Call reset()."}
             )
 
-        # 1. Save state before action for reward computation
         prev_state = self.cluster.get_state()
 
-        # 2. Apply action to cluster
         success, msg = self.cluster.apply_action(
             action_type=action.action_type,
             target_node=action.target_node,
             parameters=action.parameters,
         )
 
-        # 3. Advance simulation one step
         curr_state = self.cluster.tick()
 
-        # 4. Compute reward
         reward_dict = self.reward_engine.compute(
             action_type=action.action_type,
             target_node=action.target_node,
@@ -123,15 +141,10 @@ class DistTrainEnv:
         )
 
         reward = Reward(**reward_dict)
-
-        # 5. Check done conditions
         done = self._check_done(curr_state)
         self._done = done
-
-        # 6. Build observation
         obs = self._build_observation(curr_state)
 
-        # 7. Build info dict (extra diagnostics for agent)
         info = {
             "action_success": success,
             "action_message": msg,
@@ -139,6 +152,11 @@ class DistTrainEnv:
             "max_steps": self.max_steps,
             "root_cause_fixed": curr_state.get("root_cause_fixed", False),
             "is_healthy": self.cluster.is_healthy(),
+            "current_phase": curr_state.get("current_phase", 1),
+            "false_alarm_restarted": curr_state.get(
+                "false_alarm_restarted", False),
+            "unnecessary_restarts": curr_state.get(
+                "unnecessary_restarts", 0),
         }
 
         return StepResult(
@@ -149,11 +167,7 @@ class DistTrainEnv:
         )
 
     def state(self) -> dict:
-        """
-        Return full internal state as JSON.
-        Required by OpenEnv spec.
-        Used by openenv validate to inspect environment state.
-        """
+        """Return full internal state. Required by OpenEnv spec."""
         raw = self.cluster.get_state()
         return {
             "task_id": self.task_id,
@@ -166,23 +180,17 @@ class DistTrainEnv:
             "alerts": raw["alerts"],
             "root_cause_fixed": raw.get("root_cause_fixed", False),
             "is_healthy": self.cluster.is_healthy(),
+            "current_phase": raw.get("current_phase", 1),
+            "false_alarm_restarted": raw.get("false_alarm_restarted", False),
+            "unnecessary_restarts": raw.get("unnecessary_restarts", 0),
         }
 
     def _check_done(self, state: dict) -> bool:
-      # max steps reached
+    # 1. Max steps always ends episode
       if state["step"] >= self.max_steps:
           return True
 
-      # don't allow early termination until faults have had time to develop
-      MIN_STEPS = {"easy": 3, "medium": 4, "hard": 6}
-      if state["step"] < MIN_STEPS.get(self.task_id, 3):
-          return False
-
-      # cluster recovered — all nodes healthy and throughput restored
-      if self.cluster.is_healthy():
-          return True
-
-      # unrecoverable — loss diverged AND multiple critical nodes
+      # 2. Unrecoverable state — end early regardless of task
       critical_nodes = sum(
           1 for n in state["nodes"]
           if n["status"] in ["oom", "crashed"]
@@ -190,11 +198,22 @@ class DistTrainEnv:
       if state["job"]["loss_diverging"] and critical_nodes >= 3:
           return True
 
-      return False
+      # 3. Easy and medium — end as soon as healthy
+      if self.task_id != "hard":
+          if self.cluster.is_healthy():
+              return True
 
+      # 4. Hard — must reach Phase 3 AND be healthy
+      # Cannot end in Phase 1 or 2 even if cluster recovers
+      # But don't force all 120 steps — end cleanly once Phase 3 stabilizes
+      if self.task_id == "hard":
+          if (state.get("current_phase", 1) == 3
+                  and self.cluster.is_healthy()):
+              return True
+
+      return False
     def _build_observation(self, state: dict) -> Observation:
         """Convert raw cluster state dict to typed Observation model."""
-
         nodes = [
             NodeObservation(
                 id=n["id"],
@@ -223,4 +242,7 @@ class DistTrainEnv:
             alerts=state["alerts"],
             step=state["step"],
             task_id=self.task_id,
+            current_phase=state.get("current_phase", 1),
+            false_alarm_restarted=state.get("false_alarm_restarted", False),
+            unnecessary_restarts=state.get("unnecessary_restarts", 0),
         )
