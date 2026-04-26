@@ -206,6 +206,10 @@ class RingCluster:
             node.remove_from_ring()
             if target_node in self.ring_order:
                 self.ring_order.remove(target_node)
+            # Add this:
+            root = self.fault_injector.get_root_cause_node()
+            if target_node == root:
+                self._root_cause_fixed = True
             return True, f"{target_node} removed from ring."
 
         elif action_type == "reduce_batch":
