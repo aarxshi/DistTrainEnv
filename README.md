@@ -9,34 +9,40 @@ tags:
   - openenv
 ---
 
-# DistTrainEnv
+# Teaching a Language Model to Save a Dying Cluster
 
-An OpenEnv reinforcement learning environment simulating a distributed ML training cluster under fault conditions. An AI agent observes cluster metrics and must detect, diagnose, and recover from faults, keeping the training job healthy.
-
-- Weighted Score (LLaMA-3.3-70B via Groq): **0.7764**
-- Environment: 8-node ring all-reduce cluster
-- Tasks: 3 (easy / medium / hard)
-- Constraint: runs on 2 vCPU / 8 GB RAM
+*How we built a reinforcement learning environment and trained LLaMA-3.3-70B to manage distributed ML training as an autonomous SRE agent.*
 
 Built for the [Meta PyTorch OpenEnv Hackathon](https://openenv.dev).
 
 ---
 
-## 1. Background
+## 3 AM. The cluster is on fire.
 
-In distributed ML training, multiple GPU nodes collaborate using **ring all-reduce** to synchronize gradients across workers. Ring throughput is bounded by the slowest active node, meaning a single fault can degrade the entire cluster silently or catastrophically.
+Not literally. But if you've ever run a multi-node training job overnight, you know the specific dread of waking up to a wall of red.
 
-Common failure modes:
+```
+node_3: CRASHED
+node_7: SLOW  — throughput 30%
+gradient_staleness: 0.87
+loss_diverging: True
+```
 
-- **Node crash** — breaks the ring, training halts or produces stale gradients
-- **Straggler** — one slow node throttles all-reduce for everyone
-- **Memory OOM** — silent at first, memory climbs gradually until the node slows, then cascades into retries that overload other nodes
+A 70B parameter model has been training for six hours. Somewhere in your 8-node ring, node_2's memory has been quietly climbing — 60%, 70%, 80% — while you slept. By the time node_7 slowed to a crawl and the loss started spiking, the damage was already done. The root cause and the symptom were two different nodes. You restarted the wrong one.
 
-Today, engineers monitor dashboards and intervene manually. This environment is designed to train and evaluate RL agents to do that instead, detecting faults early and taking the right action, not just the obvious one.
+We wanted to see if a language model could do better. So we built an environment to find out.
 
 ---
 
-## 2. Environment Design
+## The Environment
+
+**DistTrainEnv** simulates a distributed training cluster: 8 nodes in a ring all-reduce topology. Every step, the agent observes cluster state and picks an action — restart a crashed node, remove a straggler from the ring, reduce batch size on an OOM node, checkpoint, or hold.
+
+Three tasks of increasing difficulty. Easy: node_3 crashes, restart it. Medium: node_5 is running at 30% speed and needs to be removed, but there's a healthy high-memory node sitting nearby that looks suspicious. Hard: a cascading OOM fault where node_2 is the silent root cause and node_7 is the visible symptom that everyone targets first.
+
+The hard task scores 0.30 for fixing node_7. It scores 1.0 for catching node_2 early. The environment rewards correct reasoning, not just visible action.
+
+### System Design
 
 ```
 ┌──────────────────────────┐     ┌─────────────────────────────┐     ┌─────────────────────────┐
@@ -59,9 +65,7 @@ Today, engineers monitor dashboards and intervene manually. This environment is 
 
 The simulation is pure Python — no real Docker containers, no GPU, no external APIs in the environment. One episode runs in milliseconds.
 
----
-
-## 3. Observation Space
+### Observation Space
 
 Each step the agent receives a full cluster snapshot:
 
@@ -85,14 +89,11 @@ Each step the agent receives a full cluster snapshot:
     "gradient_staleness": 0.12,
     "loss_diverging": false
   },
-  "ring_order": ["node_0", "node_1", "node_2", "node_3", "node_4", "node_5", "node_6"],
   "alerts": ["INFO: node_2 memory elevated (81%)"],
   "step": 4,
   "task_id": "hard"
 }
 ```
-
-Key signals:
 
 | Signal | Threshold | Meaning |
 |---|---|---|
@@ -100,62 +101,31 @@ Key signals:
 | `memory` | > 0.90 | critical — crash imminent |
 | `gradient_staleness` | > 0.30 | training degrading silently |
 | `loss_diverging` | true | serious — immediate action required |
-| `alerts` | — | named nodes with problems |
 
-Node statuses: `healthy` → `slow` → `oom` → `crashed`
-
----
-
-## 4. Action Space
+### Action Space
 
 | Action | Description | Requires `target_node` |
 |---|---|---|
 | `restart_node` | bring a crashed node back online | yes |
 | `remove_from_ring` | remove a slow node from all-reduce | yes |
 | `reduce_batch` | halve batch size to ease memory pressure | yes |
-| `checkpoint` | save training state (halves throughput this step) | no |
+| `checkpoint` | save training state | no |
 | `inspect` | get diagnostics on a specific node | yes |
 | `noop` | do nothing | no |
 
----
-
-## 5. Reward Function
-
-Dense signal every step, the agent doesn't wait until episode end to learn:
+### Reward Function
 
 ```
 reward = 0.35 × throughput_score        # cluster steps/sec vs baseline
        + 0.35 × loss_health_score        # actual loss vs expected trajectory
        + early_detection_bonus           # acted before fault became critical
-       + causal_fix_bonus                # fixed root cause (not just symptom)
-       + penalty                         # restarting healthy nodes, urgency scaling, invalid actions
+       + causal_fix_bonus                # fixed root cause, not just symptom
+       + penalty                         # restarting healthy nodes, invalid actions
 ```
 
-The `early_detection_bonus` and `causal_fix_bonus` are what create meaningful score variance between naive and smart agents especially on the hard task.
+The `early_detection_bonus` and `causal_fix_bonus` are what create meaningful score variance between naive and smart agents, especially on the hard task.
 
----
-
-## 6. Tasks
-
-### Easy — Node Crash Recovery
-
-`node_3` crashes at step 1. The alert is explicit. The agent must detect and restart or remove the node to restore ring health.
-
-- Max steps: 15 | Success threshold: 0.70
-- Grading: throughput recovery (40%), loss health (30%), steps to recovery (20%), ring integrity (10%)
-
-### Medium — Straggler Detection
-
-`node_5` runs at 30% speed from step 1. It shows as `slow`, not `crashed` — no crash alert fires. The agent must identify the bottleneck from throughput and latency signals and remove it from the ring.
-
-- Max steps: 20 | Success threshold: 0.60
-- Grading: throughput recovery (35%), detection speed (30%), loss health (25%), ring integrity (10%)
-
-### Hard — Cascading OOM Fault Recovery
-
-`node_2` begins running out of memory at step 1 (root cause — silent, memory climbs at ~6% per step). At step 5, `node_7` becomes a straggler as a downstream symptom of `node_2`'s retry storm. Gradient staleness builds and loss starts diverging.
-
-A naive agent fixes `node_7` (the visible symptom) and scores ~0.30 on root cause. A smart agent traces the causal chain to `node_2`, acts early (before memory exceeds 0.90), and scores full marks.
+### Hard Task — Cascading OOM
 
 ```
 node_2 OOM (step 1, silent) ──▶ slow + retries ──▶ node_7 straggler (step 5)
@@ -165,14 +135,100 @@ node_2 OOM (step 1, silent) ──▶ slow + retries ──▶ node_7 straggler 
                                                    loss diverges
 ```
 
-- Max steps: 25 | Success threshold: 0.50
-- Grading: root cause fixed (35%), loss + staleness health (30%), throughput recovery (20%), early detection (15%)
+A naive agent fixes node_7 (the visible symptom) and scores ~0.30. A smart agent traces the causal chain to node_2, acts before memory exceeds 0.90, and scores full marks.
 
 ---
 
-## 7. Evaluation Results
+## The Agent: LLaMA-3.3-70B
 
-Scores from running `llama-3.3-70b-versatile` via Groq API as the agent:
+We used **LLaMA-3.3-70B-Instruct** throughout. The project ran in two phases: first as a prompted agent, then fine-tuned with SFT using Unsloth.
+
+---
+
+## Phase 1: Prompting
+
+Per-task system prompts encode the fault logic for each scenario. At every step the agent receives nodes sorted by memory risk, a live analysis block with root-cause hints, and the last 5 actions with their rewards. Temperature at 0.2 for consistency.
+
+For the hard task, the system prompt explicitly lays out the causal chain:
+
+```
+FAULT CHAIN:
+- node_2 memory climbs ~6% per step from step 1 (SILENT)
+- At step 5: node_7 becomes slow (downstream SYMPTOM)
+
+ROOT CAUSE = node_2. SYMPTOM = node_7.
+Fixing node_7 only = 0.30 score. Fixing node_2 early = 1.0 score.
+```
+
+### What the Charts Actually Showed
+
+Easy and medium tasks ran cleanly enough. The hard task was a different story.
+
+The per-step reward never settled. Both the base prompted agent and the v2 version with tighter prompts oscillated between 0 and 1 across every episode with no stable trend emerging.
+
+<p align="center">
+  <img src="assets/hard_step_reward.jpeg" width="500"/>
+  <br><em>hard/step_reward — both prompted agents volatile throughout ~1200 steps</em>
+</p>
+
+The root cause chart made the problem concrete. The base agent flatlined at 0 for almost the entire run, occasionally spiking toward 0.4 before dropping straight back down. The v2 agent never triggered the causal fix signal at all. Over a thousand steps, neither version reliably identified node_2 as the source of the fault.
+
+<p align="center">
+  <img src="assets/hard_ep_root_cause_fixed.jpeg" width="500"/>
+  <br><em>hard/ep_root_cause_fixed — base agent near zero throughout, v2 never registers</em>
+</p>
+
+Mean episode reward told the same story. The base agent sat around 0.2–0.4 with high noise. The v2 agent, despite the more carefully engineered prompt, landed slightly lower and flatter. Prompt iteration was not moving the needle.
+
+<p align="center">
+  <img src="assets/hard_ep_mean_reward.jpeg" width="500"/>
+  <br><em>hard/ep_mean_reward — neither run converges, v2 no better than base</em>
+</p>
+
+The jank in these curves came from real engineering problems — API rate limits stalling episodes mid-run, malformed JSON responses causing silent fallbacks to `noop` — but fixing those didn't fix the underlying issue. Even in clean runs, the agent couldn't consistently reason its way to node_2 from a prompt alone.
+
+That's what pushed us into Phase 2.
+
+---
+
+## Phase 2: Fine-Tuning with SFT + Unsloth
+
+Rather than trying to prompt the model into consistent behavior, we fine-tuned using **SFT** (Supervised Fine-Tuning) via Unsloth on a free Colab T4 GPU.
+
+We generated training data from the environment — correct `(observation, action)` pairs across the easy and medium tasks where the agent had demonstrated the right behavior in Phase 1 — and fine-tuned the model to internalize those decisions rather than derive them from scratch at inference time.
+
+```python
+model = FastLanguageModel.get_peft_model(
+    model,
+    r                          = 16,
+    lora_alpha                 = 32,
+    use_gradient_checkpointing = "unsloth",
+)
+```
+
+LoRA rank 16 keeps roughly 1% of parameters trainable. Training ran for 3 epochs over ~250 steps with loss descending from 0.15 to around 0.12.
+
+### Results
+
+<p align="center">
+  <img src="assets/before_after_sft.png" width="750"/>
+  <br><em>Before vs After SFT fine-tuning — easy and medium tasks, 5 evaluation episodes each</em>
+</p>
+
+On the easy task, fine-tuning pushed mean episode reward from 0.471 to 0.579, a +0.108 gain.
+
+The medium task is the more striking result. The baseline prompted agent scored -0.898 — actively making things worse by triggering false alarm penalties repeatedly. After fine-tuning, the same model scored -0.003. A +0.895 swing, going from net harmful to essentially neutral behavior in a task it had previously failed completely.
+
+| Task | Baseline | Fine-tuned (SFT) | Delta |
+|---|---|---|---|
+| Easy — mean reward | 0.471 | 0.579 | +0.108 |
+| Medium — mean reward | -0.898 | -0.003 | +0.895 |
+
+The hard task remains the open problem. The root cause fix rate on the cascading OOM scenario is what we'd push further with curriculum training and more compute.
+
+---
+
+## Evaluation Results (Phase 1 — LLaMA-3.3-70B via Groq)
 
 | Task | Score |
 |---|---|
@@ -185,7 +241,26 @@ Weights: easy 0.20, medium 0.30, hard 0.50
 
 ---
 
-## 8. Folder Structure
+## What We Took Away
+
+The environment design took longer than the training code. Getting the reward function to separately credit causal fixes, penalize false alarms, and score root-cause resolution at a higher rate than symptom resolution was where most of the iteration happened.
+
+Phase 1 failing on the hard task was clarifying. The model had the reasoning capacity — it demonstrated that in the episodes where it got node_2 right — but prompting alone couldn't make that behavior reliable. SFT gave it a way to encode the correct decision pattern rather than re-derive it from a prompt every time.
+
+The medium task result was the most surprising outcome of the project. A model that was actively hurting cluster health under prompting became a neutral agent after fine-tuning. That's a bigger behavioral shift than we expected from a LoRA adapter trained on a few hundred examples.
+
+---
+
+## What's Next
+
+- **Hard task fine-tuning** — generate correct trajectories for the cascading OOM scenario and add them to the training set
+- **Curriculum training** — carry the LoRA adapter from easy to medium to hard sequentially
+- **GRPO** — now that we have a fine-tuned baseline, online RL with environment reward signals is the natural next step
+- **Real cluster integration** — replace the simulation with live NCCL metrics from an actual training run
+
+---
+
+## Folder Structure
 
 ```
 DistTrainEnv/
@@ -195,7 +270,7 @@ DistTrainEnv/
 │   ├── node.py            # single worker node state machine
 │   ├── job.py             # training job + loss curve dynamics
 │   ├── faults.py          # fault injection engine
-│   ├── ring_cluster.py    # main simulation (ties it all together)
+│   ├── ring_cluster.py    # main simulation
 │   ├── reward.py          # shaped reward computation
 │   ├── models.py          # openenv-compliant pydantic models
 │   └── env.py             # openenv api (reset / step / state)
@@ -207,11 +282,17 @@ DistTrainEnv/
 │   ├── grader_easy.py
 │   ├── grader_medium.py
 │   ├── grader_hard.py
-│   └── run_graders.py     # unified grader entry point
+│   └── run_graders.py
 │
-├── inference.py           # llm agent loop ([START] [STEP] [END] format)
+├── assets/
+│   ├── hard_step_reward.jpeg
+│   ├── hard_ep_root_cause_fixed.jpeg
+│   ├── hard_ep_mean_reward.jpeg
+│   └── before_after_sft.png
+│
+├── inference.py           # llm agent loop
 ├── app.py                 # fastapi server (openenv http api)
-├── openenv.yaml           # openenv metadata spec
+├── openenv.yaml
 ├── Dockerfile
 ├── requirements.txt
 └── README.md
@@ -219,30 +300,28 @@ DistTrainEnv/
 
 ---
 
-## 9. Running the Project
+## Running the Project
 
-**Step 1 — Install dependencies**
+**Install dependencies**
 
 ```bash
 pip install -r requirements.txt
 ```
 
-**Step 2 — Dry run (no API key needed)**
+**Dry run (no API key needed)**
 
 ```bash
 python inference.py --dry-run
 ```
 
-Uses a rule-based agent to verify the full `[START]` → `[STEP] step=N` → `[END]` log format
-
-**Step 3 — Run with a real LLM**
+**Run with a real LLM**
 
 ```bash
 HF_TOKEN=gsk_... python inference.py
 HF_TOKEN=gsk_... python inference.py --task hard
 ```
 
-**Step 4 — Start the API server**
+**Start the API server**
 
 ```bash
 python app.py
@@ -256,7 +335,7 @@ python app.py
 | GET | `/health` | health check |
 | GET | `/tasks` | list available tasks |
 
-**Step 5 — Docker**
+**Docker**
 
 ```bash
 docker build -t disttrainenv .
@@ -265,8 +344,4 @@ docker run -p 7860:7860 -e HF_TOKEN=gsk_... disttrainenv
 
 ---
 
-## 10. Conclusion
-
-This environment demonstrates that meaningful distributed systems fault recovery can be framed as an RL problem with clean, deterministic grading. The key design choices dense reward shaping, a causal fault cascade on the hard task, and early detection bonuses: create a real gap between naive and intelligent agents, making the environment genuinely useful for evaluating LLM reasoning quality.
-
-The simulation runs entirely in-process Python with no external dependencies at runtime, making it reproducible and deployable within strict compute budgets (2 vCPU / 8 GB RAM).
+*Built with LLaMA, Unsloth, TRL, and Weights & Biases.*
