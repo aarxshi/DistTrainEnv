@@ -227,7 +227,7 @@ class DistTrainEnv:
 
         # Easy and medium — end when healthy
         if self.task_id != "hard":
-            if self.cluster.is_healthy():
+            if self.cluster.is_healthy() and state.get("root_cause_fixed", False):
                 return True
             return False
 
