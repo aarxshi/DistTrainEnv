@@ -13,8 +13,6 @@ tags:
 
 *How we built a reinforcement learning environment and trained LLaMA-3.3-70B to manage distributed ML training as an autonomous SRE agent.*
 
-Built for the [Meta PyTorch OpenEnv Hackathon](https://openenv.dev).
-
 ---
 
 ## 3 AM. The cluster is on fire.
