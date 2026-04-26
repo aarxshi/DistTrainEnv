@@ -103,7 +103,7 @@ LoRA rank 16 keeps roughly 1% of parameters trainable. The full model stays froz
 
 The before/after comparison across 5 evaluation episodes per task tells the story.
 
-![Before vs After SFT fine-tuning — easy and medium tasks](1777194243103_image.png)
+![Before vs After SFT fine-tuning — easy and medium tasks](before_after_sft.png)
 
 On the easy task, fine-tuning pushed mean episode reward from 0.471 to 0.579, a +0.108 gain. Consistent and clean.
 
