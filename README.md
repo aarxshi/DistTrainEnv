@@ -90,15 +90,15 @@ LLaMA-3.3-70B-Instruct via HuggingFace Inference API. Per-task system prompts en
 
 Easy and medium ran cleanly. The hard task per-step reward never settled:
 
-![hard/step_reward](https://raw.githubusercontent.com/aarxshi/DistTrainEnv/main/assets/hard_step_reward.jpg)
+![hard/step_reward](https://raw.githubusercontent.com/aarxshi/DistTrainEnv/main/assets/hard_step_reward.jpeg)
 
 Both runs volatile — spiking between 0 and 1 with no stable trend. The root cause fix rate made the problem concrete:
 
-![hard/ep_root_cause_fixed](https://raw.githubusercontent.com/aarxshi/DistTrainEnv/main/assets/hard_ep_root_cause_fixed.jpg)
+![hard/ep_root_cause_fixed](https://raw.githubusercontent.com/aarxshi/DistTrainEnv/main/assets/hard_ep_root_cause_fixed.jpeg)
 
 Base agent near zero throughout. v2 never registers a causal fix at all. Mean episode reward confirmed prompt iteration wasn't moving the needle:
 
-![hard/ep_mean_reward](https://raw.githubusercontent.com/aarxshi/DistTrainEnv/main/assets/hard_ep_mean_reward.jpg)
+![hard/ep_mean_reward](https://raw.githubusercontent.com/aarxshi/DistTrainEnv/main/assets/hard_ep_mean_reward.jpeg)
 
 API rate limits and malformed JSON were part of the problem — but fixing those didn't fix the underlying issue. The agent couldn't consistently reason its way to node_2 from a prompt alone.
 
@@ -125,7 +125,7 @@ LoRA rank 16, ~1% of parameters trainable. 3 epochs, ~250 steps. Loss dropped fr
 
 **Easy and Medium:**
 
-![before/after](https://raw.githubusercontent.com/aarxshi/DistTrainEnv/main/results/before_after.png)
+![before/after](https://raw.githubusercontent.com/aarxshi/DistTrainEnv/main/assets/before_after_sft.png)
 
 **Hard task:**
 
